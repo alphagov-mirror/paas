@@ -155,6 +155,12 @@ output "router_subnet_cidr_blocks" {
   value = ["${aws_subnet.router.*.cidr_block}"]
 }
 
+output "ipsec_subnet_cidr_blocks" {
+  value = [
+    "${concat(aws_subnet.cell.*.cidr_block, aws_subnet.router.*.cidr_block)}",
+  ]
+}
+
 output "nat_public_ips_csv" {
   value = "${join(",", aws_eip.cf.*.public_ip)}"
 }
