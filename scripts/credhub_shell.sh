@@ -11,7 +11,7 @@ function cleanup () {
 trap cleanup EXIT
 
 BOSH_IP=$(aws ec2 describe-instances \
-    --filters "Name=tag:deploy_env,Values=${DEPLOY_ENV}" 'Name=tag:instance_group,Values=bosh' \
+    --filters "Name=tag:deploy_env,Values=${DEPLOY_ENV}" 'Name=tag:instance_group,Values=bosh' 'Name=instance-state-code,Values=16' \
     --query 'Reservations[].Instances[].PublicIpAddress' --output text)
 export BOSH_IP
 

@@ -45,6 +45,7 @@ def import_to_credhub credhub_secrets
   bosh_ip = ec2.instances(filters: [
     { name: 'tag:deploy_env', values: [deploy_env] },
     { name: 'tag:instance_group', values: ['bosh'] },
+    { name: 'instance-state-code', values: ['16'] },
   ]).first.public_ip_address
 
   env_params = {
