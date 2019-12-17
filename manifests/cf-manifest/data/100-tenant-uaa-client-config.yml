@@ -21,11 +21,13 @@ stg-lon: []
 
 prod: []
 
-prod-lon:
-  - name: dit-stratos-deployment
+prod-lon: []
+
+dev:
+  - name: fake-dit-stratos-deployment
     secret_name: secrets_uaa_clients_dit_console_secret
     uaa_client:
       scope: openid,cloud_controller.read,cloud_controller.write
       authorized-grant-types: refresh_token,authorization_code
-      redirect-uri: https://dit-console.((app_domain))/pp/v1/auth/sso_login_callback
+      redirect-uri: https://not-dit-console.((app_domain))/pp/v1/auth/sso_login_callback
       override: true
