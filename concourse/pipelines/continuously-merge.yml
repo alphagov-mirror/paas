@@ -1,0 +1,116 @@
+---
+
+# Temporary pipeline to continuously merge branches of paas-cf,
+# paas-bootstrap and paas-release-ci onto equivalent branches of paas.
+# The paas branches have the same name but have the name of the repo
+# prepended. For example branch `your-branch-name` of
+# `paas-release-ci` would become `paas-release-ci/your-branch-name` of
+# `paas`.
+#
+# Pushed manually to a Concourse. Assuming you have a Deploy Key for
+# the paas repo on your clipboard, with write permissions:
+#
+# gds aws paas-dev -- \
+#   ./bin/fly \
+#     -t miki \
+#     set-pipeline -n \
+#     -p continuously-merge \
+#     -c concourse/pipelines/continuously-merge.yml \
+#     --var=git_private_key="$(pbpaste)"
+
+resources:
+  - name: every-15-minutes
+    type: time
+    source:
+      interval: 15m
+
+jobs:
+  - name: rebase-paas-cf-onto-paas
+    serial: true
+    plan:
+      - get: every-15-minutes
+        trigger: true
+      - task: rebase-onto-paas
+        tags: [colocated-with-web]
+        config: &rebase-repo-onto-paas
+          platform: linux
+          image_resource:
+            type: docker-image
+            source:
+              repository: governmentpaas/git-ssh
+              tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+          params: &rebase-repo-onto-paas-params
+            REPO_NAME: paas-cf
+            # Deploy key for `alphagov/paas`. Will be useless once we delete that repo
+            # and rename `paas-cf` to it instead, which we're doing before going live.
+            GIT_PRIVATE_KEY: ((git_private_key))
+          run:
+            path: sh
+            args:
+              - -e
+              - -u
+              - -c
+              - |
+                mkdir -p ~/.ssh
+                echo -e "${GIT_PRIVATE_KEY}\n" > ~/.ssh/id_rsa
+                chmod 0600 ~/.ssh/id_rsa
+                echo -e "Host github.com\n\tStrictHostKeyChecking no\n" >> ~/.ssh/config
+                chmod 0600 ~/.ssh/config
+
+                mkdir "${REPO_NAME}"
+                cd "${REPO_NAME}"
+                git clone --mirror git@github.com:alphagov/"${REPO_NAME}".git .git
+                git config --bool core.bare false
+                git reset --hard
+
+                branches_updated_within_one_week=$( \
+                  git for-each-ref \
+                    --sort='-authordate:iso8601' \
+                    --format=' %(authordate:relative)%09%(refname:short)' \
+                    refs/heads | \
+                    grep -E '(day|hour|minute|second)s? ago' | \
+                    awk '{print $4}' )
+                echo "Working on these branches:"
+                echo "${branches_updated_within_one_week}"
+
+                git remote add paas git@github.com:alphagov/paas.git
+                git fetch paas master
+
+                exit_code=0
+                for branch_name in $(echo "${branches_updated_within_one_week}"); do
+                  echo "${branch_name}"
+                  git checkout "${branch_name}"
+                  git rebase paas/master \
+                    && git push --set-upstream paas HEAD:""${REPO_NAME}"/${branch_name}" --force \
+                    || ( exit_code=1 \
+                         && echo "FAILED: Rebasing ${branch_name} onto paas/master." \
+                         && git rebase --abort )
+                  git reset --hard master
+                  git checkout master
+                done
+
+                exit "$exit_code"
+
+  - name: rebase-paas-release-ci-onto-paas
+    serial: true
+    plan:
+      - get: every-15-minutes
+        trigger: true
+      - task: rebase-onto-paas
+        config:
+          <<: *rebase-repo-onto-paas
+          params:
+            <<: *rebase-repo-onto-paas-params
+            REPO_NAME: paas-release-ci
+
+  - name: rebase-paas-bootstrap-onto-paas
+    serial: true
+    plan:
+      - get: every-15-minutes
+        trigger: true
+      - task: rebase-onto-paas
+        config:
+          <<: *rebase-repo-onto-paas
+          params:
+            <<: *rebase-repo-onto-paas-params
+            REPO_NAME: paas-bootstrap
