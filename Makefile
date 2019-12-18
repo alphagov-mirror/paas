@@ -1,16 +1,19 @@
-.PHONY: help test spec lint_yaml lint_terraform lint_shellcheck lint_concourse check-env
 .DEFAULT_GOAL := help
 
+.PHONY: help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
+.PHONY: test
 test: spec compile_platform_tests lint_yaml lint_terraform lint_shellcheck lint_concourse lint_ruby lint_posix_newlines lint_symlinks ## Run linting tests
 
+.PHONY: scripts_spec
 scripts_spec:
 	cd scripts &&\
 		go get -d -t . &&\
 		go test
 
+.PHONY: tools_spec
 tools_spec:
 	cd tools/metrics &&\
 		go test -v $(go list ./... | grep -v acceptance)
@@ -19,6 +22,7 @@ tools_spec:
 	cd tools/user_management &&\
 		bundle exec rspec --format documentation
 
+.PHONY: concourse_spec
 concourse_spec:
 	cd concourse &&\
 		bundle exec rspec
@@ -28,20 +32,25 @@ concourse_spec:
 	cd concourse/scripts &&\
 		bundle exec rspec
 
+.PHONY: cloud_config_manifests_spec
 cloud_config_manifests_spec:
 	cd manifests/cloud-config &&\
 		bundle exec rspec
 
+.PHONY: cf_manifest_spec
 cf_manifest_spec:
 	cd manifests/cf-manifest &&\
 		bundle exec rspec
 
+.PHONY: prometheus_manifest_spec
 prometheus_manifest_spec:
 	cd manifests/prometheus &&\
 		bundle exec rspec
 
+.PHONY: manifests_spec
 manifests_spec: cloud_config_manifests_spec cf_manifest_spec prometheus_manifest_spec
 
+.PHONY: terraform_spec
 terraform_spec:
 	cd terraform/scripts &&\
 		go get -d -t . &&\
@@ -49,16 +58,20 @@ terraform_spec:
 	cd terraform &&\
 		bundle exec rspec
 
+.PHONY: platform_tests_spec
 platform_tests_spec:
 	cd platform-tests &&\
 		./run_tests.sh src/platform/availability/monitor/
 
+.PHONY: config_spec
 config_spec:
 	cd config &&\
 		bundle exec rspec
 
+.PHONY: spec
 spec: config_spec scripts_spec tools_spec concourse_spec manifests_spec terraform_spec platform_tests_spec
 
+.PHONY: compile_platform_tests
 compile_platform_tests:
 	GOPATH="$$(pwd)/platform-tests" \
 	go test -run ^$$ \
@@ -68,20 +81,24 @@ compile_platform_tests:
 		platform/availability/helpers \
 		platform/availability/monitor
 
+.PHONY: lint_yaml
 lint_yaml:
 	find . -name '*.yml' -not -path '*/vendor/*' -not -path './manifests/prometheus/upstream/*' -not -path './manifests/cf-deployment/ci/template/*' | xargs yamllint -c yamllint.yml
 
 .PHONY: lint_terraform
 lint_terraform: dev ## Lint the terraform files.
+	@scripts/lint_terraform.sh
 	$(eval export TF_VAR_system_dns_zone_name=$SYSTEM_DNS_ZONE_NAME)
 	$(eval export TF_VAR_apps_dns_zone_name=$APPS_DNS_ZONE_NAME)
 	@terraform/scripts/lint.sh
 
+.PHONY: lint_shellcheck
 lint_shellcheck:
 	find . -name '*.sh' -not -path './.git/*' -not -path '*/vendor/*' -not -path './platform-tests/pkg/*'  -not -path './manifests/cf-deployment/*' -not -path './manifests/prometheus/upstream/*' | xargs shellcheck
 
+.PHONY: lint_concourse
 lint_concourse:
-	cd .. && SHELLCHECK_OPTS="-e SC1091" python paas-cf/concourse/scripts/pipecleaner.py --fatal-warnings paas-cf/concourse/pipelines/*.yml
+	cd .. && SHELLCHECK_OPTS="-e SC1091" python paas/concourse/scripts/pipecleaner.py --fatal-warnings paas/concourse/pipelines/*.yml
 
 .PHONY: lint_ruby
 lint_ruby:
@@ -105,7 +122,7 @@ lint_symlinks:
 	| ./scripts/test_symlinks.sh
 
 .PHONY: pingdom
-pingdom: check-env ## Use custom Terraform provider to set up Pingdom check
+pingdom: ## Use custom Terraform provider to set up Pingdom check
 	$(if ${ACTION},,$(error Must pass ACTION=<plan|apply|...>))
 	@terraform/scripts/set-up-pingdom.sh ${ACTION}
 

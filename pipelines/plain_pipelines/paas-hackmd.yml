@@ -1,0 +1,116 @@
+---
+resource_types:
+  - name: s3-iam
+    type: docker-image
+    check_every: 24h
+    source:
+      repository: governmentpaas/s3-resource
+      tag: fda60bf4c5f85e96c16f704e128e5ead9e84d30d
+
+  - name: slack-notification-resource
+    type: docker-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+
+resources:
+  - name: paas-codimd
+    type: git
+    check_every: 1m
+    source:
+      uri: https://github.com/alphagov/paas-codimd
+      branch: gds_master
+
+  - name: hackmd-secrets
+    type: s3-iam
+    check_every: 24h
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: hackmd-secrets.yml
+
+  - name: slack-notification
+    type: slack-notification-resource
+    source:
+      url: ((slack_webhook_url))
+
+jobs:
+  - name: deploy
+    serial: true
+    plan:
+      - get: paas-codimd
+        trigger: true
+      - get: hackmd-secrets
+      - task: push
+        config:
+          platform: linux
+          image_resource:
+            type: docker-image
+            source:
+              repository: governmentpaas/cf-cli
+              tag: 0eff5b6a9c092f865a2b19cc4e75a3b539b82fa2
+          inputs:
+            - name: paas-codimd
+            - name: hackmd-secrets
+          params:
+            CF_API: https://api.((cf_system_domain))
+            CF_USER: ((cf_user))
+            CF_PASSWORD: ((cf_password))
+            CF_APPS_DOMAIN: ((cf_apps_domain))
+            CF_SYSTEM_DOMAIN: ((cf_system_domain))
+            CF_ORG: govuk-paas
+            CF_SPACE: tools
+          run:
+            path: sh
+            args:
+              - -e
+              - -u
+              - -c
+              - |
+                echo "Logging on to Cloudfoundry..."
+                cf login \
+                  -a "${CF_API}" \
+                  -u "${CF_USER}" \
+                  -p "${CF_PASSWORD}" \
+                  -o "${CF_ORG}" \
+                  -s "${CF_SPACE}"
+
+                cf create-service postgres tiny-unencrypted-9.5 hackmd-db
+                while ! cf service hackmd-db | grep -q 'create succeeded'; do
+                  echo "Waiting for creation of service to complete..."
+                  sleep 30
+                done
+
+                echo "Generating manifest template"
+                cat <<EOF | tee manifest-template.yml
+                ---
+                applications:
+                - name: hackmd
+                  buildpack: nodejs_buildpack
+                  path: ./paas-codimd/
+                  memory: 6G
+                  instances: 1
+                  stack: cflinuxfs3
+                  services:
+                    - hackmd-db
+                  env:
+                    CF_DB: hackmd-db
+                    PGSSLMODE: require
+                    UV_THREADPOOL_SIZE: 100
+                    CMD_PORT: 8080
+                    CMD_GITHUB_CLIENTID: (( grab hackmd_client_id  ))
+                    CMD_GITHUB_CLIENTSECRET: (( grab hackmd_client_secret ))
+                    CMD_DOMAIN: 'hackmd.${CF_APPS_DOMAIN}'
+                    CMD_PROTOCOL_USESSL: 'true'
+                    CMD_ALLOW_ORIGIN: 'localhost,hackmd.${CF_APPS_DOMAIN},cdnjs.cloudflare.com,fonts.googleapis.com,fonts.gstatic.com'
+                EOF
+
+                spruce merge \
+                  ./manifest-template.yml \
+                  ./hackmd-secrets/hackmd-secrets.yml |
+                  spruce merge --cherry-pick applications > manifest-prod.yml
+
+                cf zero-downtime-push hackmd -f ./manifest-prod.yml
+        on_failure:
+          put: slack-notification
+          params:
+            text: "Job $BUILD_NAME in $BUILD_JOB_NAME on $BUILD_PIPELINE_NAME failed. Check the logs at $ATC_EXTERNAL_URL/builds/$BUILD_ID."

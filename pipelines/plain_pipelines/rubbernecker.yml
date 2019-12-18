@@ -1,0 +1,136 @@
+---
+resource_types:
+  - name: s3-iam
+    type: docker-image
+    check_every: 24h
+    source:
+      repository: governmentpaas/s3-resource
+      tag: fda60bf4c5f85e96c16f704e128e5ead9e84d30d
+
+  - name: slack-notification-resource
+    type: docker-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+
+resources:
+  - name: paas-rubbernecker
+    type: git
+    check_every: 1m
+    source:
+      uri: https://github.com/alphagov/paas-rubbernecker.git
+      branch: master
+
+  - name: rubbernecker-secrets
+    type: s3-iam
+    check_every: 24h
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: rubbernecker-secrets.yml
+      initial_version: "-"
+
+  - name: slack-notification
+    type: slack-notification-resource
+    source:
+      url: ((slack_webhook_url))
+
+jobs:
+  - name: test
+    plan:
+      - get: paas-rubbernecker
+        trigger: true
+
+      - task: test
+        config:
+          platform: linux
+          image_resource:
+            type: docker-image
+            source:
+              repository: golang
+              tag: 1.12
+          inputs:
+            - name: paas-rubbernecker
+          run:
+            path: sh
+            args:
+              - -e
+              - -u
+              - -c
+              - |
+                cd paas-rubbernecker
+                make test
+        on_failure: &slack_failure_notification
+          put: slack-notification
+          params:
+            text: "Job $BUILD_NAME in $BUILD_JOB_NAME on $BUILD_PIPELINE_NAME failed. Check the logs at $ATC_EXTERNAL_URL/builds/$BUILD_ID."
+
+  - name: deploy
+    serial: true
+    plan:
+      - get: paas-rubbernecker
+        passed: ['test']
+        trigger: true
+
+      - get: rubbernecker-secrets
+
+      - task: push
+        config:
+          platform: linux
+          image_resource:
+            type: docker-image
+            source:
+              repository: governmentpaas/cf-cli
+              tag: 0eff5b6a9c092f865a2b19cc4e75a3b539b82fa2
+          inputs:
+            - name: paas-rubbernecker
+            - name: rubbernecker-secrets
+          params:
+            CF_API: https://api.((cf_system_domain))
+            CF_USER: ((cf_user))
+            CF_PASSWORD: ((cf_password))
+            CF_ORG: govuk-paas
+            CF_SPACE: tools
+            CF_APPS_DOMAIN: ((cf_apps_domain))
+            CF_SYSTEM_DOMAIN: ((cf_system_domain))
+          run:
+            path: sh
+            args:
+              - -e
+              - -u
+              - -c
+              - |
+                cd paas-rubbernecker
+
+                echo "Logging on to Cloudfoundry..."
+                cf login \
+                  -a "${CF_API}" \
+                  -u "${CF_USER}" \
+                  -p "${CF_PASSWORD}" \
+                  -o "${CF_ORG}" \
+                  -s "${CF_SPACE}"
+
+                echo "Generating manifest template"
+                cat <<EOF | tee manifest-template.yml
+                ---
+                applications:
+                - name: rubbernecker
+                  memory: 128M
+                  stack: cflinuxfs3
+                  instances: 1
+                  buildpack: go_buildpack
+                  env:
+                    PIVOTAL_TRACKER_PROJECT_ID: (( grab pivotal_tracker_project_id ))
+                    PIVOTAL_TRACKER_API_TOKEN: (( grab pivotal_tracker_api_token ))
+                    PAGERDUTY_AUTHTOKEN: (( grab pagerduty_authtoken ))
+                    GO111MODULE: on
+                    GOPACKAGENAME: github.com/alphagov/paas-rubbernecker
+                    GOVERSION: go1.12
+                EOF
+
+                spruce merge \
+                  manifest-template.yml \
+                  ../rubbernecker-secrets/rubbernecker-secrets.yml |
+                  spruce merge --cherry-pick applications > manifest.yml
+
+                cf zero-downtime-push rubbernecker -f manifest.yml
+        on_failure: *slack_failure_notification
