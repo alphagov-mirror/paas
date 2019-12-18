@@ -2,6 +2,7 @@ AllCops:
   Exclude:
     - 'vendor/**/*'
     - 'scripts/vendor/**/*'
+    - 'concourse/spec/**/*'
     - 'platform-tests/src/platform/vendor/**/*'
     - 'platform-tests/example-apps/healthcheck/vendor/**/*'
     - 'tools/metrics/vendor/**/*'

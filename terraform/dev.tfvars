@@ -18,3 +18,6 @@ apps_wildcard_canary_weight="0"
 
 # 14313350 - GOV.UK PaaS Contact - dev
 pingdom_contact_ids = [ 14313350 ]
+
+bosh_db_maintenance_window = "Mon:06:00-Mon:07:00"
+concourse_db_maintenance_window = "Mon:06:00-Mon:07:00"

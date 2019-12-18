@@ -1,0 +1,606 @@
+---
+meta:
+  containers:
+    awscli: &awscli-image-resource
+      type: docker-image
+      source:
+        repository: governmentpaas/awscli
+        tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+    bosh-cli-v2: &gov-paas-bosh-cli-v2-image-resource
+      type: docker-image
+      source:
+        repository: governmentpaas/bosh-cli-v2
+        tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+    ruby-slim: &ruby-slim-image-resource
+      type: docker-image
+      source:
+        repository: ruby
+        tag: 2.5-slim
+    self-update-pipelines: &self-update-pipelines-image-resource
+      type: docker-image
+      source:
+        repository: governmentpaas/self-update-pipelines
+        tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+    terraform: &terraform-image-resource
+      type: docker-image
+      source:
+        repository: governmentpaas/terraform
+        tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+
+resource_types:
+- name: s3-iam
+  type: docker-image
+  source:
+    repository: governmentpaas/s3-resource
+    tag: 97e441efbfb06ac7fb09786fd74c64b05f9cc907
+
+- name: semver-iam
+  type: docker-image
+  source:
+    repository: governmentpaas/semver-resource
+    tag: f2a80c95481056aa57d837e3b14f0012b542fdb3
+
+resources:
+  - name: paas-bootstrap
+    type: git
+    source:
+      uri: https://github.com/alphagov/paas-bootstrap.git
+      branch: ((branch_name))
+      commit_verification_keys: ((gpg_public_keys))
+
+  - name: bucket-terraform-state
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bucket.tfstate
+
+  - name: vpc-tfstate
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: vpc.tfstate
+
+  - name: pipeline-trigger
+    type: semver-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      key: destroy-trigger
+
+  - name: bosh-tfstate
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bosh.tfstate
+
+  - name: bosh-secrets
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bosh-secrets.yml
+
+  - name: bosh-vars-store
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bosh-vars-store.yml
+
+  - name: bosh-init-state
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: ((bosh_manifest_state))
+
+  - name: bosh-manifest
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bosh-manifest.yml
+
+  - name: concourse-tfstate
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      versioned_file: concourse.tfstate
+      region_name: ((aws_region))
+
+  - name: bosh-CA-crt
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      region_name: ((aws_region))
+      versioned_file: bosh-CA.crt
+
+  - name: ssh-private-key
+    type: s3-iam
+    source:
+      bucket: ((state_bucket))
+      versioned_file: id_rsa
+      region_name: ((aws_region))
+
+jobs:
+  - name: self-update-pipeline
+    serial: true
+    plan:
+      - get: paas-bootstrap
+      - task: upload-pipeline
+        config:
+          platform: linux
+          image_resource: *self-update-pipelines-image-resource
+          inputs:
+            - name: paas-bootstrap
+          params:
+            DEPLOY_ENV: ((deploy_env))
+            BRANCH: ((branch_name))
+            AWS_ACCOUNT: ((aws_account))
+            AWS_DEFAULT_REGION: ((aws_region))
+            SKIP_COMMIT_VERIFICATION: ((skip_commit_verification))
+            SELF_UPDATE_PIPELINE: ((self_update_pipeline))
+            TARGET_CONCOURSE: ((target_concourse))
+            CONCOURSE_TYPE: ((concourse_type))
+            ENABLE_GITHUB: ((enable_github))
+          run:
+            path: ./paas-bootstrap/concourse/scripts/self-update-pipeline.sh
+      - put: pipeline-trigger
+        params: {bump: patch}
+
+  - name: enable-bosh-access
+    serial: true
+    plan:
+      - aggregate:
+        - get: pipeline-trigger
+          trigger: true
+          passed: ['self-update-pipeline']
+        - get: paas-bootstrap
+        - get: vpc-tfstate
+        - get: bosh-tfstate
+
+      - task: vpc-terraform-outputs-to-sh
+        config:
+          platform: linux
+          image_resource: *ruby-slim-image-resource
+          inputs:
+          - name: paas-bootstrap
+          - name: vpc-tfstate
+          outputs:
+          - name: vpc-terraform-outputs
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              ruby paas-bootstrap/concourse/scripts/extract_tf_vars_from_terraform_state.rb \
+              < vpc-tfstate/vpc.tfstate \
+              > vpc-terraform-outputs/tfvars.sh
+              ls -l vpc-terraform-outputs/tfvars.sh
+
+      - task: add-concourse-IP-to-BOSH-SG
+        config:
+          platform: linux
+          image_resource: *terraform-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: vpc-terraform-outputs
+            - name: bosh-tfstate
+          outputs:
+            - name: updated-bosh-tfstate
+          params:
+            TF_VAR_env: ((deploy_env))
+            TF_VAR_system_dns_zone_name: ((system_dns_zone_name))
+            TF_VAR_system_dns_zone_id: ((system_dns_zone_id))
+            TF_VAR_bosh_fqdn: ((bosh_fqdn))
+            TF_VAR_bosh_fqdn_external: ((bosh_fqdn_external))
+            AWS_DEFAULT_REGION: ((aws_region))
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              . vpc-terraform-outputs/tfvars.sh
+              export TF_VAR_secrets_bosh_postgres_password=""
+              export TF_VAR_bosh_az=""
+              CONCOURSE_EGRESS_IP=$(wget -q -O - http://169.254.169.254/latest/meta-data/public-ipv4)
+
+              cp bosh-tfstate/bosh.tfstate updated-bosh-tfstate/bosh.tfstate
+              terraform init paas-bootstrap/terraform/bosh
+              terraform apply \
+                -auto-approve=true \
+                -var concourse_egress_cidr="${CONCOURSE_EGRESS_IP}/32" \
+                -target=aws_security_group.bosh \
+                -state=updated-bosh-tfstate/bosh.tfstate \
+                -var-file="paas-bootstrap/terraform/((aws_account)).tfvars" \
+                -var-file="paas-bootstrap/terraform/((aws_region)).tfvars" \
+                paas-bootstrap/terraform/bosh
+        ensure:
+          put: bosh-tfstate
+          params:
+            file: updated-bosh-tfstate/bosh.tfstate
+
+  - name: destroy-concourse
+    serial: true
+    plan:
+      - aggregate:
+        - get: paas-bootstrap
+          passed: ['enable-bosh-access']
+        - get: pipeline-trigger
+          passed: ['enable-bosh-access']
+          trigger: true
+        - get: bosh-vars-store
+        - get: vpc-tfstate
+        - get: concourse-tfstate
+        - get: bosh-CA-crt
+        - get: ssh-private-key
+
+      - task: destroy-concourse
+        config:
+          platform: linux
+          image_resource: *gov-paas-bosh-cli-v2-image-resource
+          inputs:
+          - name: paas-bootstrap
+          - name: bosh-vars-store
+          - name: bosh-CA-crt
+          - name: ssh-private-key
+          params:
+            BOSH_ENVIRONMENT: ((bosh_fqdn))
+            BOSH_CA_CERT: bosh-CA-crt/bosh-CA.crt
+            BOSH_DEPLOYMENT: concourse
+            BOSH_NON_INTERACTIVE: true
+
+            BOSH_GW_HOST: ((bosh_login_host))
+            BOSH_GW_USER: vcap
+            BOSH_GW_PRIVATE_KEY: ssh-private-key/id_rsa
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              . ./paas-bootstrap/concourse/scripts/bosh-tunnel.sh start
+
+              VAL_FROM_YAML=$(pwd)/paas-bootstrap/concourse/scripts/val_from_yaml.rb
+              BOSH_CLIENT=admin
+              BOSH_CLIENT_SECRET=$($VAL_FROM_YAML admin_password bosh-vars-store/bosh-vars-store.yml)
+              export BOSH_CLIENT
+              export BOSH_CLIENT_SECRET
+
+              bosh -n delete-deployment --force
+
+      - task: vpc-terraform-outputs-to-sh
+        config:
+          platform: linux
+          image_resource: *ruby-slim-image-resource
+          inputs:
+          - name: paas-bootstrap
+          - name: vpc-tfstate
+          outputs:
+          - name: vpc-terraform-outputs
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              ruby paas-bootstrap/concourse/scripts/extract_tf_vars_from_terraform_state.rb \
+              < vpc-tfstate/vpc.tfstate \
+              > vpc-terraform-outputs/tfvars.sh
+              ls -l vpc-terraform-outputs/tfvars.sh
+
+      - task: destroy-concourse-terraform
+        config:
+          platform: linux
+          image_resource: *terraform-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: vpc-terraform-outputs
+            - name: concourse-tfstate
+          outputs:
+            - name: updated-concourse-tfstate
+          params:
+            AWS_DEFAULT_REGION: ((aws_region))
+            TF_VAR_env: ((deploy_env))
+            TF_VAR_concourse_hostname: ((concourse_hostname))
+            TF_VAR_system_dns_zone_name: ((system_dns_zone_name))
+            TF_VAR_system_dns_zone_id: ((system_dns_zone_id))
+            TF_VAR_git_rsa_id_pub: anything
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              . vpc-terraform-outputs/tfvars.sh
+              touch concourse.crt concourse.key
+
+              cp concourse-tfstate/concourse.tfstate updated-concourse-tfstate/concourse.tfstate
+
+              if [ -z "$(terraform state list --state updated-concourse-tfstate/concourse.tfstate)" ]; then
+                echo "The Terraform resources were already destroyed, nothing to do"
+                exit 0
+              fi
+
+              terraform init paas-bootstrap/terraform/concourse
+              terraform destroy -force \
+                -var-file="paas-bootstrap/terraform/((aws_account)).tfvars" \
+                -var-file="paas-bootstrap/terraform/((aws_region)).tfvars" \
+                -state=updated-concourse-tfstate/concourse.tfstate \
+                paas-bootstrap/terraform/concourse
+        ensure:
+          put: concourse-tfstate
+          params:
+            file: updated-concourse-tfstate/concourse.tfstate
+
+  - name: destroy-bosh
+    serial: true
+    plan:
+      - aggregate:
+        - get: pipeline-trigger
+          trigger: true
+          passed: ['destroy-concourse']
+        - get: paas-bootstrap
+        - get: bosh-secrets
+        - get: bosh-vars-store
+        - get: bosh-init-state
+        - get: bosh-manifest
+        - get: vpc-tfstate
+        - get: bosh-tfstate
+        - get: bosh-CA-crt
+        - get: ssh-private-key
+
+      - task: check-existing-deployments
+        config:
+          platform: linux
+          image_resource: *gov-paas-bosh-cli-v2-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: bosh-vars-store
+            - name: bosh-CA-crt
+            - name: ssh-private-key
+          params:
+            BOSH_ENVIRONMENT: ((bosh_fqdn))
+            BOSH_CA_CERT: bosh-CA-crt/bosh-CA.crt
+            BOSH_DEPLOYMENT: concourse
+            BOSH_NON_INTERACTIVE: true
+
+            BOSH_GW_HOST: ((bosh_login_host))
+            BOSH_GW_USER: vcap
+            BOSH_GW_PRIVATE_KEY: ssh-private-key/id_rsa
+          run:
+            path: sh
+            args:
+              - -e
+              - -c
+              - |
+                . ./paas-bootstrap/concourse/scripts/bosh-tunnel.sh start
+
+                VAL_FROM_YAML=$(pwd)/paas-bootstrap/concourse/scripts/val_from_yaml.rb
+                BOSH_CLIENT=admin
+                BOSH_CLIENT_SECRET=$($VAL_FROM_YAML admin_password bosh-vars-store/bosh-vars-store.yml)
+                export BOSH_CLIENT
+                export BOSH_CLIENT_SECRET
+
+                if ! bosh deployments --tty | grep -q "0 deployments"; then
+                  echo "The following deployments must be deleted before destroying BOSH"
+                  echo
+                  bosh deployments
+                  exit 1
+                fi
+
+      - task: cleanup-orphaned-disks
+        config:
+          platform: linux
+          image_resource: *gov-paas-bosh-cli-v2-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: bosh-vars-store
+            - name: bosh-CA-crt
+            - name: ssh-private-key
+          params:
+            BOSH_ENVIRONMENT: ((bosh_fqdn))
+            BOSH_CA_CERT: bosh-CA-crt/bosh-CA.crt
+            BOSH_DEPLOYMENT: concourse
+            BOSH_NON_INTERACTIVE: true
+
+            BOSH_GW_HOST: ((bosh_login_host))
+            BOSH_GW_USER: vcap
+            BOSH_GW_PRIVATE_KEY: ssh-private-key/id_rsa
+          run:
+            path: sh
+            args:
+              - -e
+              - -c
+              - |
+                . ./paas-bootstrap/concourse/scripts/bosh-tunnel.sh start
+
+                VAL_FROM_YAML=$(pwd)/paas-bootstrap/concourse/scripts/val_from_yaml.rb
+                BOSH_CLIENT=admin
+                BOSH_CLIENT_SECRET=$($VAL_FROM_YAML admin_password bosh-vars-store/bosh-vars-store.yml)
+                export BOSH_CLIENT
+                export BOSH_CLIENT_SECRET
+
+                bosh -n clean-up --all
+
+      - task: destroy-bosh-instance
+        config:
+          platform: linux
+          image_resource: *gov-paas-bosh-cli-v2-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: bosh-manifest
+            - name: bosh-init-state
+            - name: ssh-private-key
+          params:
+            BOSH_MANIFEST_STATE: ((bosh_manifest_state))
+          outputs:
+            - name: bosh-init-working-dir
+          run:
+            path: sh
+            args:
+              - -e
+              - -c
+              - |
+                cp bosh-manifest/bosh-manifest.yml bosh-init-working-dir/bosh-manifest.yml
+                cp bosh-init-state/"${BOSH_MANIFEST_STATE}" bosh-init-working-dir/bosh-manifest-state.json
+                mkdir bosh-init-working-dir/.ssh
+                cp ssh-private-key/id_rsa bosh-init-working-dir/.ssh/id_rsa
+                bosh -n delete-env bosh-init-working-dir/bosh-manifest.yml \
+                  --state bosh-init-working-dir/bosh-manifest-state.json
+                # If the delete is successful, the file will be missing
+                if [ ! -f bosh-init-working-dir/bosh-manifest-state.json ]; then
+                  # ID has to match value from the seed in the bosh-cli-v2 container:
+                  # https://github.com/alphagov/paas-docker-cloudfoundry-tools/blob/master/bosh-cli-v2/bosh_init_cache/minimal-state.json
+                  echo '{ "installation_id": "44f01911-a47a-4a24-6ca3-a3109b33f058" }' > bosh-init-working-dir/bosh-manifest-state.json
+                fi
+        ensure:
+          put: bosh-init-state
+          params:
+            file: "bosh-init-working-dir/bosh-manifest-state.json"
+
+      - task: extract-terraform-variables
+        config:
+          platform: linux
+          image_resource: *ruby-slim-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: vpc-tfstate
+            - name: bosh-secrets
+          outputs:
+            - name: terraform-variables
+          run:
+            path: sh
+            args:
+              - -e
+              - -c
+              - |
+                ruby paas-bootstrap/concourse/scripts/extract_tf_vars_from_terraform_state.rb \
+                < vpc-tfstate/vpc.tfstate > terraform-variables/vpc.tfvars.sh
+                ruby paas-bootstrap/concourse/scripts/extract_tf_vars_from_yaml.rb \
+                < bosh-secrets/bosh-secrets.yml > terraform-variables/bosh-secrets.tfvars.sh
+
+      - task: destroy-terraform
+        config:
+          platform: linux
+          image_resource: *terraform-image-resource
+          inputs:
+            - name: paas-bootstrap
+            - name: terraform-variables
+            - name: bosh-tfstate
+          outputs:
+            - name: updated-bosh-tfstate
+          params:
+            DEPLOY_ENV: ((deploy_env))
+            AWS_DEFAULT_REGION: ((aws_region))
+            TF_VAR_system_dns_zone_name: ((system_dns_zone_name))
+            TF_VAR_system_dns_zone_id: ((system_dns_zone_id))
+            TF_VAR_bosh_az: ((bosh_az))
+            TF_VAR_bosh_fqdn: ((bosh_fqdn))
+            TF_VAR_bosh_fqdn_external: ((bosh_fqdn_external))
+          run:
+            path: sh
+            args:
+              - -e
+              - -c
+              - |
+                . terraform-variables/vpc.tfvars.sh
+                . terraform-variables/bosh-secrets.tfvars.sh
+
+                touch paas-bootstrap/terraform/bosh/id_rsa.pub
+                CONCOURSE_EGRESS_IP=$(wget -q -O - http://169.254.169.254/latest/meta-data/public-ipv4)
+
+                cp bosh-tfstate/bosh.tfstate updated-bosh-tfstate/bosh.tfstate
+                terraform init paas-bootstrap/terraform/bosh
+                terraform destroy -force \
+                  -var concourse_egress_cidr="${CONCOURSE_EGRESS_IP}/32" \
+                  -var env="((deploy_env))" \
+                  -var-file="paas-bootstrap/terraform/((aws_account)).tfvars" \
+                  -var-file="paas-bootstrap/terraform/((aws_region)).tfvars" \
+                  -state=updated-bosh-tfstate/bosh.tfstate \
+                  paas-bootstrap/terraform/bosh
+        ensure:
+          put: bosh-tfstate
+          params:
+            file: updated-bosh-tfstate/bosh.tfstate
+
+  - name: destroy-vpc
+    serial: true
+    plan:
+      - aggregate:
+        - get: paas-bootstrap
+          passed: ['destroy-bosh']
+        - get: vpc-tfstate
+        - get: pipeline-trigger
+          trigger: true
+          passed: ['destroy-bosh']
+
+      - task: tf-destroy-vpc
+        config:
+          platform: linux
+          image_resource: *terraform-image-resource
+          params:
+              TF_VAR_env: ((deploy_env))
+              AWS_DEFAULT_REGION: ((aws_region))
+          inputs:
+            - name: paas-bootstrap
+            - name: vpc-tfstate
+          outputs:
+            - name: updated-vpc-tfstate
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              cp vpc-tfstate/vpc.tfstate updated-vpc-tfstate/vpc.tfstate
+              terraform init paas-bootstrap/terraform/vpc
+              terraform destroy -force \
+                -var-file="paas-bootstrap/terraform/((aws_account)).tfvars" \
+                -var-file="paas-bootstrap/terraform/((aws_region)).tfvars" \
+                -state=updated-vpc-tfstate/vpc.tfstate \
+                paas-bootstrap/terraform/vpc
+        ensure:
+          put: vpc-tfstate
+          params:
+            file: updated-vpc-tfstate/vpc.tfstate
+
+  - name: destroy-init-bucket
+    serial: true
+    plan:
+      - aggregate:
+        - get: paas-bootstrap
+          passed: ['destroy-vpc']
+        - get: bucket-terraform-state
+        - get: pipeline-trigger
+          trigger: true
+          passed: ['destroy-vpc']
+
+      - task: tf-destroy-init-bucket
+        config:
+          platform: linux
+          image_resource: *terraform-image-resource
+          params:
+              TF_VAR_env: ((deploy_env))
+              TF_VAR_state_bucket: ((state_bucket))
+              AWS_DEFAULT_REGION: ((aws_region))
+          inputs:
+            - name: paas-bootstrap
+            - name: bucket-terraform-state
+          run:
+            path: sh
+            args:
+            - -e
+            - -c
+            - |
+              terraform init paas-bootstrap/terraform/bucket
+              terraform destroy -force \
+                -var-file="paas-bootstrap/terraform/((aws_account)).tfvars" \
+                -var-file="paas-bootstrap/terraform/((aws_region)).tfvars" \
+                -state=bucket-terraform-state/bucket.tfstate \
+                paas-bootstrap/terraform/bucket

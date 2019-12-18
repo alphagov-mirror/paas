@@ -42,13 +42,28 @@ cf_manifest_spec:
 	cd manifests/cf-manifest &&\
 		bundle exec rspec
 
+.PHONY: shared_manifest_spec
+shared_manifest_spec:
+	cd manifests/shared &&\
+		bundle exec rspec
+
+.PHONY: bosh_manifest_spec
+bosh_manifest_spec:
+	cd manifests/bosh-manifest &&\
+		bundle exec rspec
+
+.PHONY: concourse_manifest_spec
+concourse_manifest_spec:
+	cd manifests/concourse-manifest &&\
+		bundle exec rspec
+
 .PHONY: prometheus_manifest_spec
 prometheus_manifest_spec:
 	cd manifests/prometheus &&\
 		bundle exec rspec
 
 .PHONY: manifests_spec
-manifests_spec: cloud_config_manifests_spec cf_manifest_spec prometheus_manifest_spec
+manifests_spec: cloud_config_manifests_spec cf_manifest_spec prometheus_manifest_spec shared_manifest_spec bosh_manifest_spec concourse_manifest_spec
 
 .PHONY: terraform_spec
 terraform_spec:
@@ -94,7 +109,7 @@ lint_terraform: dev ## Lint the terraform files.
 
 .PHONY: lint_shellcheck
 lint_shellcheck:
-	find . -name '*.sh' -not -path './.git/*' -not -path '*/vendor/*' -not -path './platform-tests/pkg/*'  -not -path './manifests/cf-deployment/*' -not -path './manifests/prometheus/upstream/*' | xargs shellcheck
+	find . -name '*.sh' -not -path './.git/*' -not -path '*/vendor/*' -not -path './platform-tests/pkg/*'  -not -path './manifests/cf-deployment/*' -not -path './manifests/prometheus/upstream/*' -not -path './manifests/bosh-manifest/upstream/*' | xargs shellcheck
 
 .PHONY: lint_concourse
 lint_concourse:

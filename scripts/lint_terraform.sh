@@ -14,3 +14,9 @@ cd terraform
 terraform init >/dev/null
 terraform validate >/dev/null
 terraform fmt -check -diff
+
+for dir in ./*/; do
+  terraform init "${dir}" >/dev/null
+  terraform validate -check-variables=false "${dir}" >/dev/null
+  terraform fmt -check -diff "${dir}"
+done

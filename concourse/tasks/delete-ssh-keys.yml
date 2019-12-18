@@ -1,0 +1,23 @@
+---
+platform: linux
+image_resource:
+  type: docker-image
+  source:
+    repository: governmentpaas/awscli
+    tag: b2495d6ed07f680125d19aa7d1701da7efabb289
+inputs:
+  - name: paas-bootstrap
+run:
+  path: sh
+  args:
+    - -e
+    - -c
+    - -u
+    - |
+      if aws s3 ls "s3://${BUCKET}/${SSH_KEY_PREFIX}id_rsa" > /dev/null; then
+         aws s3 rm "s3://${BUCKET}/${SSH_KEY_PREFIX}id_rsa"
+      fi
+      if aws s3 ls "s3://${BUCKET}/${SSH_KEY_PREFIX}id_rsa.pub" > /dev/null; then
+         aws s3 rm "s3://${BUCKET}/${SSH_KEY_PREFIX}id_rsa.pub"
+      fi
+      echo "Done"

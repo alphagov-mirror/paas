@@ -1,0 +1,44 @@
+meta:
+  containers:
+    awscli: &awscli-image-resource
+      type: docker-image
+      source:
+        repository: governmentpaas/awscli
+        tag: 91fe1e826f39798986d95a02fb1ccab6f0e7c746
+
+resources:
+  - name: delete-timer
+    type: time
+    source:
+      start: 20:00 -0000
+      stop: 21:00 -0000
+      interval: 24h
+
+jobs:
+  - name: delete
+    serial: true
+    plan:
+    - get: delete-timer
+      trigger: true
+    - task: delete-deployment
+      config:
+        platform: linux
+        image_resource: *awscli-image-resource
+        inputs:
+          - name: delete-timer
+        params:
+          VAGRANT_SSH_KEY_NAME: ((vagrant_ssh_key_name))
+        run:
+          path: sh
+          args:
+          - -e
+          - -c
+          - |
+            export AWS_AVAILIABILITY_ZONE AWS_DEFAULT_REGION AWS_INSTANCE_ID
+            AWS_AVAILIABILITY_ZONE=$(curl -qs http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            AWS_DEFAULT_REGION="${AWS_AVAILIABILITY_ZONE%%[a-z]}"
+            AWS_INSTANCE_ID=$(curl -qs http://169.254.169.254/latest/meta-data/instance-id)
+
+            aws ec2 delete-key-pair --key-name "${VAGRANT_SSH_KEY_NAME}"
+            aws ec2 terminate-instances --instance-ids "${AWS_INSTANCE_ID}"
+

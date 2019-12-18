@@ -21,3 +21,13 @@ apps_wildcard_canary_weight="0"
 # 14313358 - GOV.UK PaaS Contact - prod
 # 14270734 - PaaS PagerDuty 24x7
 pingdom_contact_ids = [ 14313358, 14270734 ]
+
+bosh_db_multi_az = "true"
+bosh_db_backup_retention_period = "35"
+bosh_db_skip_final_snapshot = "false"
+bosh_db_maintenance_window = "Thu:06:00-Thu:07:00"
+
+concourse_db_multi_az = "true"
+concourse_db_backup_retention_period = "35"
+concourse_db_skip_final_snapshot = "false"
+concourse_db_maintenance_window = "Thu:06:00-Thu:07:00"

@@ -1,0 +1,57 @@
+#!/bin/bash
+
+set -eu
+
+if [ -z "${DEPLOY_ENV:-}" ]; then
+  echo "You must set the DEPLOY_ENV environment variable" 1>&2
+  exit 1
+fi
+
+if [ -z "${AWS_ACCOUNT}" ]; then
+  echo "You must set the AWS_ACCOUNT environment variable to (dev|ci|staging|prod)" 1>&2
+  exit 1
+fi
+
+case "$AWS_ACCOUNT" in
+  dev)
+	SYSTEM_DNS_ZONE_NAME="${DEPLOY_ENV}.dev.cloudpipeline.digital"
+  ;;
+  ci)
+	SYSTEM_DNS_ZONE_NAME="${DEPLOY_ENV}.ci.cloudpipeline.digital"
+  ;;
+  staging)
+	SYSTEM_DNS_ZONE_NAME="staging.london.cloudpipeline.digital"
+  ;;
+  prod)
+	SYSTEM_DNS_ZONE_NAME="cloud.service.gov.uk"
+  ;;
+esac
+
+BOSH_ID_RSA="$(aws s3 cp "s3://gds-paas-${DEPLOY_ENV}-state/id_rsa" - | base64)"
+export BOSH_ID_RSA
+
+BOSH_CA_CERT="$(aws s3 cp "s3://gds-paas-${DEPLOY_ENV}-state/bosh-CA.crt" -)"
+export BOSH_CA_CERT
+
+BOSH_IP=$(aws ec2 describe-instances \
+	--filters "Name=tag:deploy_env,Values=${DEPLOY_ENV}" 'Name=tag:instance_group,Values=bosh' \
+	--query 'Reservations[].Instances[].PublicIpAddress' --output text)
+export BOSH_IP
+
+export BOSH_CLIENT=admin
+BOSH_CLIENT_SECRET=$(aws s3 cp "s3://gds-paas-${DEPLOY_ENV}-state/bosh-vars-store.yml" - | \
+	ruby -ryaml -e 'print YAML.load(STDIN)["admin_password"]')
+export BOSH_CLIENT_SECRET
+
+
+docker run  \
+    -it \
+	--rm \
+	--env "BOSH_ID_RSA" \
+	--env "BOSH_IP" \
+	--env "BOSH_CLIENT" \
+	--env "BOSH_CLIENT_SECRET" \
+	--env "BOSH_ENVIRONMENT=bosh.${SYSTEM_DNS_ZONE_NAME}" \
+	--env "BOSH_CA_CERT" \
+	--env "BOSH_DEPLOYMENT=${DEPLOY_ENV}" \
+	governmentpaas/bosh:71282be5cd658a67f944e2fd2d7b89e495fe6e53 "$@"

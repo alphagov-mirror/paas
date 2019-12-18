@@ -13,3 +13,7 @@ gem 'rest-client', '~> 2.1.0'
 gem 'rspec', '~> 3.3'
 gem 'simplecov', require: false, group: :test
 gem 'webmock', '~> 2.3.1'
+
+group :secret_generator do
+  gem 'net-ssh', '>= 2.9.2'
+end

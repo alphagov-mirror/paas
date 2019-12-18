@@ -1,0 +1,33 @@
+- type: replace
+  path: /instance_groups/name=bosh/properties/director/user_management/uaa?/url
+  value: "https://((bosh_fqdn)):8443"
+
+- type: replace
+  path: /instance_groups/name=bosh/jobs/name=uaa/properties/uaa/url
+  value: "https://((bosh_fqdn)):8443"
+
+- type: replace
+  path: /instance_groups/name=bosh/jobs/name=uaa/properties/uaadb
+  value:
+    address: ((external_db_host))
+    port: ((external_db_port))
+    db_scheme: postgresql
+    databases:
+    - tag: uaa
+      name: uaa
+    roles:
+    - tag: admin
+      name: uaa
+      password: ((uaa_postgres_password))
+
+- type: replace
+  path: /variables/name=uaa_ssl/options/alternative_names/-
+  value: ((bosh_fqdn))
+
+- type: replace
+  path: /variables/name=uaa_service_provider_ssl/options/alternative_names/-
+  value: ((bosh_fqdn))
+
+- type: replace
+  path: /instance_groups/name=bosh/jobs/name=uaa/properties/uaa/ca_certs?/-
+  value: ((aws_rds_combined_ca_bundle))

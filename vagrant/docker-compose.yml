@@ -1,0 +1,67 @@
+version: '3'
+
+services:
+  concourse-db:
+    image: postgres:11.5
+    environment:
+    - POSTGRES_DB=${CONCOURSE_POSTGRES_DATABASE:-concourse}
+    - POSTGRES_PASSWORD=${CONCOURSE_POSTGRES_PASSWORD:-concourse_pass}
+    - POSTGRES_USER=${CONCOURSE_POSTGRES_USER:-concourse_user}
+    - PGDATA=/database
+
+  concourse-web:
+    image: concourse/concourse:5.7.0
+    command: web
+    privileged: true
+    depends_on: [concourse-db]
+    ports: ["8080:8080", "2222:2222"]
+    volumes: ["/tmp/keys/:/keys/"]
+    dns:
+      - 169.254.169.253
+    restart: on-failure:10
+    environment:
+    - CONCOURSE_POSTGRES_HOST=${CONCOURSE_POSTGRES_HOST:-concourse-db}
+    - CONCOURSE_POSTGRES_USER=${CONCOURSE_POSTGRES_USER:-concourse_user}
+    - CONCOURSE_POSTGRES_PASSWORD=${CONCOURSE_POSTGRES_PASSWORD:-concourse_pass}
+    - CONCOURSE_POSTGRES_DATABASE=${CONCOURSE_POSTGRES_DATABASE:-concourse}
+    - CONCOURSE_EXTERNAL_URL
+    - CONCOURSE_ADD_LOCAL_USER=${CONCOURSE_ADD_LOCAL_USER:-test:test}
+    - CONCOURSE_MAIN_TEAM_LOCAL_USER=${CONCOURSE_WEB_USER:-test}
+    - CONCOURSE_TSA_AUTHORIZED_KEYS=/keys/worker_key.pub
+    - CONCOURSE_TSA_HOST_KEY=/keys/tsa_host_key
+    - CONCOURSE_SESSION_SIGNING_KEY=/keys/session_signing_key
+
+  concourse-worker-colocated:
+    image: concourse/concourse:5.7.0
+    command: worker
+    privileged: true
+    depends_on: [concourse-db, concourse-web]
+    links: [concourse-web]
+    volumes: ["/tmp/keys/:/keys/"]
+    dns:
+      - 169.254.169.253
+    restart: on-failure:10
+    environment:
+    - CONCOURSE_TSA_HOST=concourse-web:2222
+    - CONCOURSE_TSA_PUBLIC_KEY=/keys/tsa_host_key.pub
+    - CONCOURSE_TSA_WORKER_PRIVATE_KEY=/keys/worker_key
+    - CONCOURSE_WORKER_WORK_DIR=/tmp/worker-colocated
+    - CONCOURSE_TAG=colocated-with-web
+    - CONCOURSE_GARDEN_DNS_SERVER=169.254.169.253
+
+  concourse-worker-normal:
+    image: concourse/concourse:5.7.0
+    command: worker
+    privileged: true
+    depends_on: [concourse-db, concourse-web]
+    links: [concourse-web]
+    volumes: ["/tmp/keys/:/keys/"]
+    dns:
+      - 169.254.169.253
+    restart: on-failure:10
+    environment:
+    - CONCOURSE_TSA_HOST=concourse-web:2222
+    - CONCOURSE_TSA_PUBLIC_KEY=/keys/tsa_host_key.pub
+    - CONCOURSE_TSA_WORKER_PRIVATE_KEY=/keys/worker_key
+    - CONCOURSE_WORKER_WORK_DIR=/tmp/worker-normal
+    - CONCOURSE_GARDEN_DNS_SERVER=169.254.169.253

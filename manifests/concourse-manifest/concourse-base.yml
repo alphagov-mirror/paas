@@ -1,0 +1,158 @@
+---
+meta:
+  stemcell:
+    name: bosh-aws-xen-hvm-ubuntu-xenial-go_agent
+    version: "621.29"
+
+name: concourse
+
+stemcells:
+  # Using spruce grab operation because of the upload step in pipeline
+  - alias: default
+    os: ubuntu-xenial
+    version: (( grab meta.stemcell.version ))
+
+# These versions and checksums are taken from the versions.yml file from the
+# relevant tag of https://github.com/concourse/concourse-bosh-deployment
+releases:
+  - name: "concourse"
+    version: "5.7.1"
+    url: "https://bosh.io/d/github.com/concourse/concourse-bosh-release?v=5.7.1"
+    sha1: "0e183503af84afbbf228cfc30b584b120080b975"
+  - name: "bpm"
+    version: "1.1.5"
+    url: "https://bosh.io/d/github.com/cloudfoundry/bpm-release?v=1.1.5"
+    sha1: "e612e88543012ae5d376dd3746159d5abe748076"
+
+instance_groups:
+  - name: concourse
+    instances: 1
+    stemcell: default
+
+    azs:
+      - b1
+
+    vm_type: concourse
+    vm_extensions:
+      - concourse
+
+    env:
+      bosh:
+        password: (( grab secrets.vcap_password ))
+        ipv6:
+          enable: true
+
+    jobs:
+      - name: bpm
+        release: bpm
+        properties: {}
+
+      - name: web
+        release: concourse
+        properties:
+          cluster_name: (( grab terraform_outputs_environment ))
+          external_url: (( concat "https://" terraform_outputs_concourse_dns_name ))
+          add_local_users:
+            - admin:((concourse_web_password))
+          auth_duration: (( grab $CONCOURSE_AUTH_DURATION ))
+          main_team:
+            auth:
+              local:
+                users:
+                - admin
+          postgresql:
+            database: (( grab terraform_outputs_concourse_db_name ))
+            host: (( grab terraform_outputs_concourse_db_address ))
+            port: (( grab terraform_outputs_concourse_db_port ))
+            role:
+              name: (( grab terraform_outputs_concourse_db_username ))
+              password: (( grab terraform_outputs_concourse_db_password ))
+          token_signing_key: ((concourse_token_signing_key))
+          prometheus:
+            bind_ip: 0.0.0.0
+            bind_port: 9391
+          worker_gateway:
+            host_key: ((concourse_tsa_host_key))
+            authorized_keys: [((concourse_worker_key.public_key))]
+          credhub:
+            url: (( concat "https://bosh." $SYSTEM_DNS_ZONE_NAME ":8844/api" ))
+            client_id: credhub-admin
+            client_secret: (( grab secrets.bosh_credhub_admin_client_password ))
+            tls:
+              ca_cert:
+                certificate: ((credhub_ca_cert))
+
+      - name: worker
+        release: concourse
+        properties:
+          worker_gateway:
+            hosts: ["127.0.0.1:2222"]
+            host_public_key: ((concourse_tsa_host_key.public_key))
+            worker_key: ((concourse_worker_key))
+          tags: [colocated-with-web]
+          garden:
+            allow_host_access: true
+
+    networks:
+      - name: public
+        static_ips:
+          - (( grab terraform_outputs_concourse_elastic_ip ))
+      - name: concourse
+        default: [dns, gateway]
+
+  - name: concourse-worker
+    instances: ((concourse_worker_instances))
+    stemcell: default
+
+    azs:
+      - b1
+
+    vm_type: concourse_worker
+    vm_extensions:
+      - concourse_worker
+
+    env:
+      bosh:
+        password: (( grab secrets.vcap_password ))
+        ipv6:
+          enable: true
+
+    jobs:
+      - name: bpm
+        release: bpm
+        properties: {}
+
+      - name: worker
+        release: concourse
+        properties:
+          worker_gateway:
+            worker_key: ((concourse_worker_key))
+            host_public_key: ((concourse_tsa_host_key.public_key))
+          garden:
+            allow_host_access: true
+
+    networks:
+      - name: concourse
+        default: [dns, gateway]
+
+update:
+  canaries: 1
+  max_in_flight: 1
+  canary_watch_time: 30000-600000
+  update_watch_time: 5000-600000
+
+tags:
+  deploy_env: (( grab terraform_outputs_environment ))
+
+variables:
+  - name: concourse_tsa_host_key
+    type: ssh
+
+  - name: concourse_worker_key
+    type: ssh
+
+  - name: concourse_token_signing_key
+    type: rsa
+
+  - name: concourse_web_password
+    type: password

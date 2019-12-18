@@ -7,3 +7,6 @@ platform-tests/pkg
 platform-tests/src/results
 terraform/.terraform/
 org_usage.csv
+vagrant/.vagrant/
+*vagrant-bootstrap-concourse
+*.swp

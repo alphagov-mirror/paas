@@ -69,6 +69,11 @@ variable "infra_subnet_ids" {
   default     = ""
 }
 
+variable "concourse_egress_cidr" {
+  description = "Public egress IP address of concourse running the pipeline"
+  default     = ""
+}
+
 variable "microbosh_static_private_ip" {
   description = "Microbosh internal IP"
   default     = "10.0.0.6"
@@ -97,6 +102,7 @@ variable "api_access_cidrs" {
 }
 
 # See https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/elb-security-policy-table.html
+
 variable "default_elb_security_policy" {
   description = "Which Security policy to use for ELBs. This controls things like available SSL protocols/ciphers."
   default     = "ELBSecurityPolicy-TLS-1-2-2017-01"
@@ -146,4 +152,18 @@ variable "peer_vpc_ids" {
 variable "peer_cidrs" {
   description = "The CIDR of the VPC to peer with"
   default     = []
+}
+
+variable "log_groups_to_ship_to_csls" {
+  description = "The names of the log groups to ship to CSLS, without the _env suffix"
+  type        = "list"
+
+  default = [
+    "bosh_d_audit",
+    "bosh_d_audit_worker",
+    "bosh_d_auth",
+    "bosh_d_credhub_security_events",
+    "bosh_d_kauditd",
+    "bosh_d_uaa_events",
+  ]
 }
